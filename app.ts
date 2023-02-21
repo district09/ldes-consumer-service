@@ -4,26 +4,26 @@ import {
   updateState,
   getLatestTimestamp
 } from "./sparql-queries";
-
-import { NamedNode } from "@rdfjs/types";
 import { DataFactory } from "n3";
-import * as RDF from "rdf-js";
+import * as RDF from "@rdfjs/types";
 import Consumer, { Member } from "ldes-consumer";
 import { TreeProperties, convertBlankNodes, extractBaseResourceUri, extractVersionTimestamp, extractEndpointHeadersFromEnv, getSameAsForObject, getSameAsForSubject } from "./utils";
 import { CronJob } from "cron";
 import {
+  RUNONCE,
   CRON_PATTERN,
   LDES_VERSION_OF_PATH,
   LDES_TIMESTAMP_PATH,
   LDES_ENDPOINT_HEADER_PREFIX,
   LDES_ENDPOINT_VIEW,
   REPLACE_VERSIONS,
+  LDES_STREAM
 } from "./config";
-const { quad, variable } = DataFactory;
 
-const latestVersionMap : Map<NamedNode, Date> = new Map();
+const { quad, variable, namedNode } = DataFactory;
+const latestVersionMap : Map<RDF.NamedNode, Date> = new Map();
 
-async function latestVersionTimestamp (resource: NamedNode, treeProperties: TreeProperties): Promise<Date | null> {
+async function latestVersionTimestamp (resource: RDF.NamedNode, treeProperties: TreeProperties): Promise<Date | null> {
   if (latestVersionMap.has(resource)) {
     return latestVersionMap.get(resource)!;
   } else {
@@ -37,7 +37,7 @@ async function latestVersionTimestamp (resource: NamedNode, treeProperties: Tree
   }
 }
 
-async function processMember (member: Member, sameAsMap: Map<RDF.NamedNode, RDF.NamedNode>,treeProperties: TreeProperties) {
+async function processMember (member: Member, sameAsMap: Map<RDF.NamedNode, RDF.NamedNode>, treeProperties: TreeProperties) {
   let quadsToAdd: RDF.Quad[] = [];
   const quadsToRemove: RDF.Quad[] = [];
   const baseResourceUri = extractBaseResourceUri(member, treeProperties);
@@ -49,8 +49,7 @@ async function processMember (member: Member, sameAsMap: Map<RDF.NamedNode, RDF.
       if (versionTimestamp) {
         latestVersionMap.set(baseResourceUri, versionTimestamp);
       }
-    }
-    else if (latestTimestamp && versionTimestamp && versionTimestamp > latestTimestamp) {
+    } else if (latestTimestamp && versionTimestamp && versionTimestamp > latestTimestamp) {
       quadsToRemove.push(
         quad(variable("s"), treeProperties.versionOfPath, baseResourceUri)
       );
@@ -60,12 +59,11 @@ async function processMember (member: Member, sameAsMap: Map<RDF.NamedNode, RDF.
       }
       quadsToAdd = member.quads;
     }
-  }
-  else {
+  } else {
     quadsToAdd = member.quads;
   }
 
-  sameAsMap.forEach((value, key) => { 
+  sameAsMap.forEach((value, key) => {
     let quads = getSameAsForObject(member, key);
     quads.forEach((q) => {
       quadsToRemove.push(quad(q.subject, q.predicate, q.object));
@@ -77,7 +75,7 @@ async function processMember (member: Member, sameAsMap: Map<RDF.NamedNode, RDF.
       quadsToRemove.push(quad(q.subject, q.predicate, q.object));
       quadsToAdd.push(quad(value, q.predicate, q.object));
     });
-  })
+  });
 
   await executeDeleteInsertQuery(quadsToRemove, quadsToAdd);
 }
@@ -91,9 +89,10 @@ const consumerJob = new CronJob(CRON_PATTERN, async () => {
       return;
     }
     taskIsRunning = true;
-    const initialState = await fetchState();
+    const stream = namedNode(LDES_STREAM);
+    const initialState = await fetchState(stream);
     const endpoint = LDES_ENDPOINT_VIEW;
-    console.log('RUN CONSUMER');
+    console.log("RUN CONSUMER");
     if (endpoint) {
       const consumer = new Consumer({
         endpoint,
@@ -114,13 +113,19 @@ const consumerJob = new CronJob(CRON_PATTERN, async () => {
             console.error(
               `Something went wrong when processing the member: ${e}`
             );
+            // @ts-ignore
             console.error(e.stack);
           }
         },
-        async (state) =>  {
-          console.log('CONSUMER DONE');
-          await updateState(state);
+        async (state) => {
+          console.log("CONSUMER DONE");
+          await updateState(stream, state);
           taskIsRunning = false;
+          // Shutdown process when running as a Job.
+          if (RUNONCE) {
+            console.log("Job is complete.");
+            process.exit();
+          }
         }
       );
     } else {
@@ -128,13 +133,18 @@ const consumerJob = new CronJob(CRON_PATTERN, async () => {
     }
   } catch (e) {
     console.error(e);
+  } finally {
+    taskIsRunning = false;
   }
 });
 
-console.log("config", {   CRON_PATTERN,
-                          LDES_VERSION_OF_PATH,
-                          LDES_TIMESTAMP_PATH,
-                          LDES_ENDPOINT_VIEW,
-                          REPLACE_VERSIONS,
-                      });
+console.log("config", {
+  RUNONCE,
+  CRON_PATTERN,
+  LDES_VERSION_OF_PATH,
+  LDES_TIMESTAMP_PATH,
+  LDES_ENDPOINT_VIEW,
+  REPLACE_VERSIONS
+});
+
 consumerJob.start();

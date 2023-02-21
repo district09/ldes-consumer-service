@@ -1,30 +1,28 @@
-import { Term } from "rdf-js";
 import { Member } from "ldes-consumer";
-import * as RDF from "rdf-js";
+import * as RDF from "@rdfjs/types";
 import { DataFactory } from "n3";
 import { BLANK, XSD } from "./namespaces";
 import { v4 as uuidv4 } from "uuid";
 import { sparqlEscapeString, sparqlEscapeUri } from "mu";
-import { NamedNode } from "@rdfjs/types";
-const { literal } = DataFactory;
 import namespace from "@rdfjs/namespace";
+const { literal } = DataFactory;
 
 export interface TreeProperties {
-  versionOfPath: NamedNode,
-  timestampPath: NamedNode
+  versionOfPath: RDF.NamedNode,
+  timestampPath: RDF.NamedNode
 }
 
-export function toString (term: Term): string {
+export function toString (term: RDF.Term): string {
   switch (term.termType) {
     case "NamedNode":
       return sparqlEscapeUri(term.value);
-    case "Literal":
+    case "Literal": {
       let result = sparqlEscapeString(term.value);
 
       if (term.language) result += `@${term.language}`;
-      else if (term.datatype)
-        result += `^^${sparqlEscapeUri(term.datatype.value)}`;
+      else if (term.datatype) { result += `^^${sparqlEscapeUri(term.datatype.value)}`; }
       return result;
+    }
     case "Quad":
       return `${toString(term.subject)} ${toString(
         term.predicate
@@ -36,47 +34,50 @@ export function toString (term: Term): string {
   }
 }
 
-export function fromDate(date: Date): RDF.Literal {
+export function fromDate (date: Date): RDF.Literal {
   return literal(date.toISOString(), XSD("dateTime"));
 }
 
-export function convertBlankNodes(quads: RDF.Quad[]) {
+export function convertBlankNodes (quads: RDF.Quad[]) {
   const blankNodesMap = new Map<RDF.BlankNode, RDF.NamedNode>();
   const sameAsMap = new Map<RDF.NamedNode, RDF.NamedNode>();
   quads.forEach((quad) => {
     if (quad.subject.termType === "BlankNode") {
       let namedNode;
-      if (quad.object.datatype && quad.object.datatype.value.startsWith("https://stad.gent/id/identificatiesysteem")) {
+      if (quad.object.datatype && quad.object.datatype?.value.startsWith("https://stad.gent/id/identificatiesysteem")) {
         // generate uri based on object datatype and value
         namedNode = namespace(quad.object.datatype.value + "/")(quad.object.value);
       }
-
       if (!blankNodesMap.has(quad.subject)) {
-        blankNodesMap.set(quad.subject, (namedNode? namedNode : BLANK(uuidv4())));
+        blankNodesMap.set(quad.subject, (namedNode || BLANK(uuidv4())));
       } else if (namedNode) {
         sameAsMap.set(blankNodesMap.get(quad.subject)!, namedNode);
         blankNodesMap.set(quad.subject, namedNode);
       }
-      quad.subject = blankNodesMap.get(quad.subject)!;
     }
 
     if (quad.object.termType === "BlankNode") {
       if (!blankNodesMap.has(quad.object)) {
         blankNodesMap.set(quad.object, BLANK(uuidv4()));
       }
-      quad.object = blankNodesMap.get(quad.object)!;
+    }
+    if (quad.subject.termType === "BlankNode" || quad.object.termType === "BlankNode") {
+      const newSubject = blankNodesMap.get(quad.subject) || quad.subject;
+      const newObject = blankNodesMap.get(quad.object) || quad.object;
+      return DataFactory.quad(newSubject, quad.predicate, newObject, quad.graph);
+    } else {
+      return quad;
     }
   });
-
   return sameAsMap;
 }
 
-export function getSameAsForObject(member: Member, sameAs: NamedNode) : RDF.Quad[]  {
+export function getSameAsForObject (member: Member, sameAs: RDF.NamedNode) : RDF.Quad[] {
   return member.quads.filter((quad) => quad.object.equals(sameAs));
 }
 
-export function getSameAsForSubject(member: Member, sameAs: NamedNode) : RDF.Quad[]  {
-  return member.quads.filter((quad) =>quad.subject.equals(sameAs));
+export function getSameAsForSubject (member: Member, sameAs: RDF.NamedNode) : RDF.Quad[] {
+  return member.quads.filter((quad) => quad.subject.equals(sameAs));
 }
 
 export function extractVersionTimestamp (member: Member, treeProperties: TreeProperties) : Date | null {
@@ -99,10 +100,9 @@ export function extractBaseResourceUri (
   if (baseResourceMatches && baseResourceMatches.length) {
     return baseResourceMatches[0].object as RDF.NamedNode;
   }
-  return;
 }
 
-export function extractEndpointHeadersFromEnv(prefix: string) {
+export function extractEndpointHeadersFromEnv (prefix: string) {
   const headers: {
     [key: string]: number | string | string[];
   } = {};
